@@ -1,6 +1,9 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
 
 void memdump(char *fmt, char *data);
 
@@ -56,10 +59,49 @@ main(int argc, char *argv[])
   }
   exit(0);
 }
-
 void
 memdump(char *fmt, char *data)
 {
-  // Your code here.
-
+  while (*fmt) {
+    switch (*fmt) {
+      case 'i': {  // 32-bit integer, decimal
+        int val = *(int *)data;           // Type pun: treat next 4 bytes as int
+        printf("%d\n", val);
+        data += sizeof(int);              // Advance pointer by 4 bytes
+        break;
+      }
+      case 'p': {  // 64-bit pointer/value, hex
+        uint64 val = *(uint64 *)data;     // Treat next 8 bytes as 64-bit unsigned
+        printf("%lx\n", val);             // %lx for long hex (or %llx if needed)
+        data += sizeof(uint64);           // Advance by 8 bytes
+        break;
+      }
+      case 'h': {  // 16-bit short, decimal
+        short val = *(short *)data;
+        printf("%d\n", val);              // %d is fine (sign extension ok here)
+        data += sizeof(short);            // Advance by 2 bytes
+        break;
+      }
+      case 'c': {  // Single char
+        char val = *data;
+        printf("%c\n", val);
+        data += sizeof(char);             // Advance by 1 byte
+        break;
+      }
+      case 's': {  // 64-bit pointer to null-terminated string
+        char *str = *(char **)data;       // Dereference the 8-byte pointer
+        printf("%s\n", str);
+        data += sizeof(char *);           // Advance by 8 bytes (pointer size)
+        break;
+      }
+      case 'S': {  // Rest of data is null-terminated string
+        printf("%s\n", data);             // Print from current position
+        return;                           // Done — rest is consumed
+      }
+      default:
+        // Unknown format → ignore or error (for safety, skip)
+        break;
+    }
+    fmt++;  // Move to next format character
+  }
 }
