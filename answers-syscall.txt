@@ -1,0 +1,13 @@
+1. syscall was called by usertrap().
+
+2. p->trapframe->a7 is 0xf (15). It represents the system call number, which corresponds to SYS_open.
+
+3. The previous CPU mode was user mode.
+
+4. The kernel panics at instruction "lw a3,0(zero)" and the variable "num" corresponds to register a3.
+
+5. The faulting assembly instruction observed in gdb matches the instruction found in kernel.asm.
+
+6. The kernel crashes because the address 0, which is not mapped in the kernel address space, causing a load page fault (scause = 0xd).
+
+7. The process running at the time of the panic was "init" with pid 1.
