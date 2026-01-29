@@ -105,3 +105,60 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// uint64
+// sys_interpose(void)
+// {
+//   int mask;
+//   uint64 path;
+
+//   if(argint(0, &mask) < 0)
+//     return -1;
+//   if(argaddr(1, &path) < 0)
+//     return -1;
+
+//   struct proc *p = myproc();
+//   p->syscall_mask = mask;
+
+//   return 0;
+// }
+
+
+
+
+
+//this below code is used for sandbox
+// uint64
+// sys_interpose(void)
+// {
+//   int mask;
+//   uint64 path;
+
+//   argint(0, &mask);
+//   argaddr(1, &path);
+
+//   struct proc *p = myproc();
+//   p->syscall_mask = mask;
+
+//   return 0;
+// }
+
+
+
+//this below code is used for sandbox pathname
+
+uint64
+sys_interpose(void)
+{
+  int mask;
+  char path[MAXPATH];
+
+  argint(0, &mask);
+  argstr(1, path, MAXPATH);
+
+  struct proc *p = myproc();
+  p->syscall_mask = mask;
+  safestrcpy(p->allowed_path, path, MAXPATH);
+
+  return 0;
+}

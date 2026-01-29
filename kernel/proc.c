@@ -113,9 +113,14 @@ allocproc(void)
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if(p->state == UNUSED) {
+    if(p->state == UNUSED)
+    {
+
+      p->syscall_mask = 0;
+      p->allowed_path[0] = 0;
       goto found;
-    } else {
+    } 
+    else {
       release(&p->lock);
     }
   }
@@ -271,7 +276,9 @@ kfork(void)
     release(&np->lock);
     return -1;
   }
+  np->syscall_mask = p->syscall_mask;
   np->sz = p->sz;
+  safestrcpy(np->allowed_path, p->allowed_path, MAXPATH);
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);

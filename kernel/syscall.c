@@ -80,6 +80,7 @@ argstr(int n, char *buf, int max)
 }
 
 // Prototypes for the functions that handle system calls.
+extern uint64 sys_interpose(void);
 extern uint64 sys_fork(void);
 extern uint64 sys_exit(void);
 extern uint64 sys_wait(void);
@@ -126,6 +127,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_interpose]  sys_interpose, 
 };
 
 void
@@ -134,7 +136,48 @@ syscall(void)
   int num;
   struct proc *p = myproc();
 
-  num = p->trapframe->a7;
+  num = p->trapframe->a7;    // we should change this line inorder to crash the kernel       
+  
+//   if(p->syscall_mask & (1 << num)){
+//   p->trapframe->a0 = -1;
+//   return;
+// }
+
+ // Block only valid syscalls, and never block interpose itself
+
+ //below code is for sandbox
+  // if(num > 0 && num < NELEM(syscalls) &&
+  //    num != SYS_interpose &&
+  //    (p->syscall_mask & (1 << num))) {
+  //   p->trapframe->a0 = -1;
+  //   return;
+  // }
+//below code is for sandbox pathname
+if(num > 0 && num < NELEM(syscalls) &&
+   num != SYS_interpose &&
+   (p->syscall_mask & (1 << num))) {
+
+  // Special case for open and exec
+  if(num == SYS_open || num == SYS_exec) {
+
+    char path[MAXPATH];
+    argstr(0, path, MAXPATH);
+
+    // if path == allowed path, allow it
+    // if(strcmp(path, p->allowed_path) == 0)  
+
+    if(strncmp(path, p->allowed_path, MAXPATH) == 0) // changed to this line the above one for sandbox pathname
+
+      goto allow;
+  }
+
+  // otherwise, block
+  p->trapframe->a0 = -1;
+  return;
+}
+
+allow:
+
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
