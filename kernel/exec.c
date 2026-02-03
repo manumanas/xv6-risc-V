@@ -156,18 +156,30 @@ loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz
 {
   uint i, n;
   uint64 pa;
+  pte_t *pte;
 
   for(i = 0; i < sz; i += PGSIZE){
-    pa = walkaddr(pagetable, va + i);
-    if(pa == 0)
+    pte = walk(pagetable, va + i, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
       panic("loadseg: address should exist");
+
+    if(*pte & PTE_COW){
+      if(cowcopy(pagetable, va + i) < 0)
+        panic("loadseg: cowcopy failed");
+      pte = walk(pagetable, va + i, 0);
+    }
+
+    pa = PTE2PA(*pte);
+
     if(sz - i < PGSIZE)
       n = sz - i;
     else
       n = PGSIZE;
+
     if(readi(ip, 0, (uint64)pa, offset+i, n) != n)
       return -1;
   }
   
   return 0;
 }
+

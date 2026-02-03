@@ -9,6 +9,12 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+
+
+
+void incref(uint64);
+int cowcopy(pagetable_t, uint64);
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -168,8 +174,7 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
-uint64          vmfault(pagetable_t, uint64, int);
-
+uint64 vmfault(pagetable_t pagetable, uint64 va, int read);
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);

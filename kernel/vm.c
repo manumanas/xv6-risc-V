@@ -127,15 +127,23 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
+  if(pte == 0 || (*pte & PTE_V) == 0)
     return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+
+  // Handle COW when kernel writes
+  if(*pte & PTE_COW){
+    if(cowcopy(pagetable, va) < 0)
+      return 0;
+    pte = walk(pagetable, va, 0);
+  }
+
   if((*pte & PTE_U) == 0)
     return 0;
+
   pa = PTE2PA(*pte);
   return pa;
 }
+
 
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa.
@@ -299,26 +307,33 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      continue;   // page table entry hasn't been allocated
-    if((*pte & PTE_V) == 0)
-      continue;   // physical page hasn't been allocated
+    pte = walk(old, i, 0);
+if(pte == 0 || (*pte & PTE_V) == 0)
+  continue;   // hole: skip lazy page
+
+
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+
+    // If writable, make both parent & child COW
+    if(flags & PTE_W){
+      *pte = (*pte & ~PTE_W) | PTE_COW;     // parent
+      flags = (flags & ~PTE_W) | PTE_COW;  // child
     }
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+      goto bad;
+
+    incref(pa);   // share page
   }
+
+  sfence_vma();   // flush TLB for parent
   return 0;
 
- err:
+bad:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
@@ -348,23 +363,31 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
-      return -1;
-  
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
-        return -1;
-      }
-    }
+    return -1;
 
     pte = walk(pagetable, va0, 0);
-    // forbid copyout over read-only user text pages.
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+
+
+    // Handle COW
+    if(*pte & PTE_COW){
+      if(cowcopy(pagetable, va0) < 0)
+        return -1;
+      pte = walk(pagetable, va0, 0); // re-walk after COW
+    }
+
+    // Must be writable now
     if((*pte & PTE_W) == 0)
       return -1;
-      
+
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
+
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
@@ -374,6 +397,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   return 0;
 }
 
+
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
@@ -381,18 +405,30 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+      if(va0 >= MAXVA)
+      return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+  return -1;
+    // Handle COW
+    if(*pte & PTE_COW){
+      if(cowcopy(pagetable, va0) < 0)
         return -1;
-      }
+      pte = walk(pagetable, va0, 0);
     }
+
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
+
     memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
     len -= n;
@@ -401,6 +437,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   }
   return 0;
 }
+
 
 // Copy a null-terminated string from user to kernel.
 // Copy bytes to dst from virtual address srcva in a given page table,
@@ -411,25 +448,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
   uint64 n, va0, pa0;
   int got_null = 0;
-
+  pte_t *pte;
+  
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(va0 >= MAXVA)
+    return -1;
+
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
       return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+
+
+    if(*pte & PTE_COW){
+      if(cowcopy(pagetable, va0) < 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+    }
+
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
+    char *p = (char *)(pa0 + (srcva - va0));
     while(n > 0){
       if(*p == '\0'){
         *dst = '\0';
         got_null = 1;
         break;
-      } else {
-        *dst = *p;
       }
+      *dst = *p;
       --n;
       --max;
       p++;
@@ -438,12 +490,12 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
     srcva = va0 + PGSIZE;
   }
-  if(got_null){
+
+  if(got_null)
     return 0;
-  } else {
-    return -1;
-  }
+  return -1;
 }
+
 
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
@@ -475,12 +527,39 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 int
 ismapped(pagetable_t pagetable, uint64 va)
 {
-  pte_t *pte = walk(pagetable, va, 0);
-  if (pte == 0) {
+  if(va >= MAXVA)
     return 0;
-  }
-  if (*pte & PTE_V){
+
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if(*pte & PTE_V)
     return 1;
-  }
+  return 0;
+}
+
+int
+cowcopy(pagetable_t pt, uint64 va)
+{
+  va = PGROUNDDOWN(va);
+  if(va >= MAXVA)
+    return -1;
+
+  pte_t *pte = walk(pt, va, 0);
+  if(pte == 0 || !(*pte & PTE_COW))
+    return -1;
+
+  uint64 pa = PTE2PA(*pte);
+  char *mem = kalloc();
+  if(mem == 0)
+    return -1;
+
+  memmove(mem, (void*)pa, PGSIZE);
+
+  uint flags = PTE_FLAGS(*pte);
+  *pte = PA2PTE((uint64)mem) | ((flags & ~PTE_COW) | PTE_W);
+
+  sfence_vma();
+  kfree((void*)pa);
   return 0;
 }

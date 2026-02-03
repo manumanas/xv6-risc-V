@@ -66,16 +66,19 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
-    // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
-  } else {
-    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+ } else if((which_dev = devintr()) != 0){
+  // ok
+} else if((r_scause() == 15 || r_scause() == 13) &&
+          vmfault(p->pagetable, r_stval(),
+                  (r_scause() == 13)) != 0){
+  // handled lazy allocation
+} else if(r_scause() == 15){   // COW write fault
+  if(cowcopy(p->pagetable, r_stval()) < 0)
     setkilled(p);
-  }
+} else {
+  // illegal memory access or other fault: kill process silently
+  setkilled(p);
+}
 
   if(killed(p))
     kexit(-1);
@@ -146,10 +149,16 @@ kerneltrap()
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
-    // interrupt or trap from an unknown source
-    printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, r_sepc(), r_stval());
-    panic("kerneltrap");
+  // Kernel tried to write to a COW user page
+  if(scause == 15){
+    struct proc *p = myproc();
+    if(p && cowcopy(p->pagetable, r_stval()) == 0){
+      return;
+    }
   }
+  printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, r_sepc(), r_stval());
+  panic("kerneltrap");
+}
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2 && myproc() != 0)
