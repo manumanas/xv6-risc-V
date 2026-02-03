@@ -1,0 +1,7 @@
+HE110 World
+Y becomes a garbage value
+functions arguments are passed in a0,a1,a2,a3,a4,a5,a6,a7.
+The value 13 is in the register a2
+printf is located at 0x6f6
+ra has 0x34. Immediately after the call to printf
+There is no call to f and g in main. Because both functions are inlined by the compiler, so their code is directly inserted instead of using a jump and link call
