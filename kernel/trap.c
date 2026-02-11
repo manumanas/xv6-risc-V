@@ -2,9 +2,17 @@
 #include "param.h"
 #include "memlayout.h"
 #include "riscv.h"
+
 #include "spinlock.h"
+#include "sleeplock.h"
+
+#include "fs.h"        // <-- NDIRECT is defined HERE
+#include "file.h"      // <-- uses NDIRECT, inode, sleeplock
+
+#include "fcntl.h"
 #include "proc.h"
 #include "defs.h"
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -34,7 +42,7 @@ trapinithart(void)
 // called from, and returns to, trampoline.S
 // return value is user satp for trampoline.S to switch to.
 //
-uint64
+void
 usertrap(void)
 {
   int which_dev = 0;
@@ -42,56 +50,87 @@ usertrap(void)
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
-  // send interrupts and exceptions to kerneltrap(),
-  // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);  //DOC: kernelvec
+  // send traps to kerneltrap() while in kernel
+  w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
-  // save user program counter.
+
+  // save user program counter
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
-
     if(killed(p))
       kexit(-1);
 
-    // sepc points to the ecall instruction,
-    // but we want to return to the next instruction.
     p->trapframe->epc += 4;
-
-    // an interrupt will change sepc, scause, and sstatus,
-    // so enable only now that we're done with those registers.
     intr_on();
-
     syscall();
+
   } else if((which_dev = devintr()) != 0){
-    // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
+    // device interrupt
+
+  } else if(r_scause() == 13 || r_scause() == 15){
+    // page fault (mmap lazy allocation)
+
+    uint64 va = PGROUNDDOWN(r_stval());
+    int handled = 0;
+
+    for(int i = 0; i < NVMA; i++){
+      struct vma *v = &p->vmas[i];
+      if(v->used &&
+         va >= v->addr &&
+         va < v->addr + v->len){
+
+        char *mem = kalloc();
+        if(mem == 0){
+          setkilled(p);
+          break;
+        }
+
+        memset(mem, 0, PGSIZE);
+
+        ilock(v->file->ip);
+        readi(v->file->ip, 0, (uint64)mem,
+              va - v->addr, PGSIZE);
+        iunlock(v->file->ip);
+
+        int perm = PTE_U | PTE_V;
+        if(v->prot & PROT_READ)  perm |= PTE_R;
+        if(v->prot & PROT_WRITE) perm |= PTE_W;
+
+        if(mappages(p->pagetable, va, PGSIZE,
+                    (uint64)mem, perm) < 0){
+          kfree(mem);
+          setkilled(p);
+        }
+
+        handled = 1;
+        break;
+      }
+    }
+
+    if(!handled)
+      setkilled(p);
+
   } else {
-    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+    printf("usertrap(): unexpected scause 0x%lx pid=%d\n",
+           r_scause(), p->pid);
+    printf("            sepc=0x%lx stval=0x%lx\n",
+           r_sepc(), r_stval());
     setkilled(p);
   }
 
   if(killed(p))
     kexit(-1);
 
-  // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
 
+  intr_off();
   prepare_return();
-
-  // the user page table to switch to, for trampoline.S
-  uint64 satp = MAKE_SATP(p->pagetable);
-
-  // return to trampoline.S; satp value in a0.
-  return satp;
 }
+
 
 //
 // set up trapframe and control registers for a return to user space

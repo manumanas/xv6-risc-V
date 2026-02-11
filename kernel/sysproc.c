@@ -105,3 +105,75 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+
+  struct file *f;
+  struct proc *p = myproc();
+
+  // fetch syscall arguments (NO return value checks)
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
+
+  // lab guarantees these, but we still validate
+  if(addr != 0 || offset != 0)
+    return -1;
+
+  if(fd < 0 || fd >= NOFILE)
+    return -1;
+
+  f = p->ofile[fd];
+  if(f == 0)
+    return -1;
+
+  // find free VMA slot
+  int i;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used == 0)
+      break;
+  }
+
+  if(i == NVMA)
+    return -1;
+
+  uint64 sz = PGROUNDUP(length);
+
+  // choose a virtual address (top-down)
+  uint64 base = MAXVA - PGSIZE;
+  for(int j = 0; j < i; j++){
+    if(p->vmas[j].used)
+      base -= PGROUNDUP(p->vmas[j].len);
+  }
+  base = PGROUNDDOWN(base - sz);
+
+  // fill VMA
+  p->vmas[i].used  = 1;
+  p->vmas[i].addr  = base;
+  p->vmas[i].len   = sz;
+  p->vmas[i].prot  = prot;
+  p->vmas[i].flags = flags;
+  p->vmas[i].file  = f;
+
+  filedup(f);
+
+  return base;
+}
+uint64
+sys_munmap(void)
+{
+  return -1;
+}
+
+

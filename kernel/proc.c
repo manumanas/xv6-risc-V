@@ -146,6 +146,11 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  for(int i = 0; i < NVMA; i++){
+  p->vmas[i].used = 0;
+  }
+
+
   return p;
 }
 

@@ -18,6 +18,19 @@ struct context {
   uint64 s11;
 };
 
+//mmap
+#define NVMA 16   // max mmap regions per process
+
+struct vma {
+  uint64 addr;        // starting virtual address
+  uint64 len;         // length in bytes
+  int prot;           // PROT_READ / PROT_WRITE
+  int flags;          // MAP_SHARED / MAP_PRIVATE
+  struct file *file;  // mapped file
+  int used;           // 1 if this VMA slot is in use
+};
+
+
 // Per-CPU state.
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
@@ -104,4 +117,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vmas[NVMA];
+  
 };
